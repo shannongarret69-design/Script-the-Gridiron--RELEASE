@@ -1,0 +1,8 @@
+{
+  "name": "Remix Gridiron Script \u0026 Strategy NFL",
+  "description": "Madden-style NFL football game featuring scriptable play outcomes, full 32-team exhibition mode, an interactive visual playbook editor, and complete 18-week season mode with playoff brackets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

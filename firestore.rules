@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /clash_rooms/{roomId} {
+      allow read, write: if true;
+    }
+
+    match /clash_leaderboard/{userId} {
+      allow read, write: if true;
+    }
+
+    match /clash_auctions/{auctionId} {
+      allow read, write: if true;
+    }
+
+    match /clash_config/{configId} {
+      allow read, write: if true;
+    }
+
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /players/{playerId} {
+      allow read, write: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

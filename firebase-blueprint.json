@@ -1,0 +1,134 @@
+{
+  "entities": {
+    "Player": {
+      "title": "Player",
+      "description": "Base player data in the game",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique player ID" },
+        "name": { "type": "string", "description": "Player name" },
+        "rating": { "type": "number", "description": "Base rating" },
+        "position": { "type": "string", "description": "Position" }
+      },
+      "required": ["id", "name", "rating", "position"]
+    },
+    "UserCard": {
+      "title": "UserCard",
+      "description": "A player card owned by a user",
+      "type": "object",
+      "properties": {
+        "playerId": { "type": "string", "description": "Reference to the base player" },
+        "acquiredAt": { "type": "string", "format": "date-time", "description": "When the card was acquired" }
+      },
+      "required": ["playerId", "acquiredAt"]
+    },
+    "Squad": {
+      "title": "Squad",
+      "description": "A user's active squad",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the squad" },
+        "playerIds": { "type": "array", "description": "Array of player card IDs in the squad" }
+      },
+      "required": ["name", "playerIds"]
+    },
+    "ClashRoom": {
+      "title": "ClashRoom",
+      "description": "An online multiplayer lobby room for Gridiron Clash",
+      "type": "object",
+      "properties": {
+        "hostUserId": { "type": "string", "description": "UID of room host" },
+        "hostTeamName": { "type": "string", "description": "Team name of host" },
+        "hostOvr": { "type": "number", "description": "OVR rating of host squad" },
+        "status": { "type": "string", "description": "Lobby status" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation time" }
+      },
+      "required": ["hostUserId", "hostTeamName", "status"]
+    },
+    "ClashLeaderboard": {
+      "title": "ClashLeaderboard",
+      "description": "Global leaderboard entry for Gridiron Clash online play",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "User ID" },
+        "teamName": { "type": "string", "description": "Team name" },
+        "userOvr": { "type": "number", "description": "Overall rating" },
+        "wins": { "type": "number", "description": "Online wins" },
+        "losses": { "type": "number", "description": "Online losses" },
+        "gridIrons": { "type": "number", "description": "Total Grid Irons" }
+      },
+      "required": ["userId", "teamName", "userOvr", "wins", "losses"]
+    },
+    "ClashAuction": {
+      "title": "ClashAuction",
+      "description": "An online auction listing for players in Gridiron Clash",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique listing ID" },
+        "buyNowPrice": { "type": "number", "description": "Buy now price in Grid Irons" },
+        "seller": { "type": "string", "description": "Seller team name" },
+        "sellerUserId": { "type": "string", "description": "Seller user ID" },
+        "timeLeftMinutes": { "type": "number", "description": "Time left in minutes" },
+        "durationMinutes": { "type": "number", "description": "Original auction duration in minutes" },
+        "expiresAt": { "type": "number", "description": "Timestamp in milliseconds when the auction expires" },
+        "listedAt": { "type": "number", "description": "Timestamp when listed" },
+        "card": { "type": "object", "description": "The card object being auctioned" }
+      },
+      "required": ["id", "buyNowPrice", "seller", "sellerUserId", "card"]
+    },
+    "GlobalConfig": {
+      "title": "GlobalConfig",
+      "description": "Global game configuration including synchronized daily missions",
+      "type": "object",
+      "properties": {
+        "lastMissionReset": { "type": "number", "description": "Timestamp in ms of last global daily mission reset" },
+        "missions": { "type": "array", "description": "Array of active global daily missions" }
+      },
+      "required": ["lastMissionReset", "missions"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile and game data",
+      "type": "object",
+      "properties": {
+        "teamName": { "type": "string" },
+        "gridIrons": { "type": "number" },
+        "roster": { "type": "array" },
+        "startingLineup": { "type": "object" },
+        "transactions": { "type": "array" },
+        "aiBattlesWon": { "type": "number" },
+        "aiBattlesPlayed": { "type": "number" },
+        "wins": { "type": "number" },
+        "losses": { "type": "number" },
+        "userOvr": { "type": "number" }
+      },
+      "required": ["teamName", "gridIrons", "roster", "startingLineup"]
+    }
+  },
+  "firestore": {
+    "/players/{playerId}": {
+      "schema": { "$ref": "Player" },
+      "description": "Master list of all players"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "Persistent user data"
+    },
+    "/clash_rooms/{roomId}": {
+      "schema": { "$ref": "ClashRoom" },
+      "description": "Online multiplayer lobby rooms"
+    },
+    "/clash_leaderboard/{userId}": {
+      "schema": { "$ref": "ClashLeaderboard" },
+      "description": "Online global leaderboards"
+    },
+    "/clash_auctions/{auctionId}": {
+      "schema": { "$ref": "ClashAuction" },
+      "description": "Online shared player auctions"
+    },
+    "/clash_config/{configId}": {
+      "schema": { "$ref": "GlobalConfig" },
+      "description": "Global game settings and shared daily missions"
+    }
+  }
+}
