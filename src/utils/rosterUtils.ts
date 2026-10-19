@@ -138,11 +138,18 @@ export function promoteToStarter(roster: FranchisePlayer[], playerId: string): F
 
 /**
  * Toggles benched status on a player.
+ * "The players gain 2 hits back a player when they are benched."
  */
 export function toggleBench(roster: FranchisePlayer[], playerId: string): FranchisePlayer[] {
   return roster.map((p) => {
     if (p.id === playerId) {
-      return { ...p, isBenched: !p.isBenched };
+      const willBeBenched = !p.isBenched;
+      const recoveredHits = willBeBenched ? Math.max(0, (p.fatigueHits || 0) - 2) : (p.fatigueHits || 0);
+      return {
+        ...p,
+        isBenched: willBeBenched,
+        fatigueHits: recoveredHits,
+      };
     }
     return p;
   });

@@ -422,18 +422,28 @@ export function saveToSlot(slotId: 1 | 2 | 3, season: FranchiseSeasonState): voi
       savedAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
       season,
     };
-    localStorage.setItem(`${SAVE_PREFIX}${slotId}`, JSON.stringify(saveObj));
+    try {
+      localStorage.setItem(`${SAVE_PREFIX}${slotId}`, JSON.stringify(saveObj));
+    } catch (quotaErr) {
+      // If quota exceeded, trim history and retry
+      season.history = [];
+      saveObj.season = season;
+      localStorage.setItem(`${SAVE_PREFIX}${slotId}`, JSON.stringify(saveObj));
+    }
+
     // Also keep legacy key synced for slot 1
     if (slotId === 1) {
-      localStorage.setItem('gridiron_nfl_season', JSON.stringify({
-        id: season.id,
-        userTeamId: season.userTeamId,
-        currentWeek: season.currentWeek,
-        schedule: season.schedule,
-        standings: season.standings,
-        playoffs: season.playoffs,
-        isSeasonComplete: season.isSeasonComplete,
-      }));
+      try {
+        localStorage.setItem('gridiron_nfl_season', JSON.stringify({
+          id: season.id,
+          userTeamId: season.userTeamId,
+          currentWeek: season.currentWeek,
+          schedule: season.schedule,
+          standings: season.standings,
+          playoffs: season.playoffs,
+          isSeasonComplete: season.isSeasonComplete,
+        }));
+      } catch (e) {}
     }
   } catch (err) {
     console.error('Error saving to slot', err);
@@ -639,12 +649,26 @@ export function syncFinishedGameToActiveSlot(
       const userScore = isHome ? finishedGame.homeScore : finishedGame.awayScore;
       const oppScore = isHome ? finishedGame.awayScore : finishedGame.homeScore;
       const isWin = userScore > oppScore;
+      const inGameRoster = isHome ? (finishedGame.homeTeam as any).roster : (finishedGame.awayTeam as any).roster;
 
       const updatedRoster = season.userRoster.map((player) => {
         const maxOvr = getMaxOvrForPlayer(player);
         const stats = playerStatsMap[player.id];
 
         let updatedPlayer = { ...player };
+
+        // Sync fatigue and in-game bench/injury status
+        if (inGameRoster) {
+          const match = inGameRoster.find((p: any) => p.id === player.id || p.name === player.name);
+          if (match) {
+            updatedPlayer.fatigueHits = match.fatigueHits;
+            updatedPlayer.isBenched = match.isBenched;
+            if (match.isInjured) {
+              updatedPlayer.isInjured = match.isInjured;
+              updatedPlayer.injuryDetails = match.injuryDetails;
+            }
+          }
+        }
 
         // Accumulate player stats and append game log
         if (stats && stats.played) {

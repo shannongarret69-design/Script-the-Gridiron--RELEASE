@@ -11,7 +11,8 @@ import {
   changePosition,
 } from '../utils/rosterUtils';
 import { generateInitialTeamRoster } from '../utils/aiRosterGenerator';
-import { Users, ArrowUp, ArrowDown, Star, Ban, X, RefreshCw, ShieldAlert, Award, ArrowRightLeft, Sparkles } from 'lucide-react';
+import { getPlayerSafeHits, calculateInjuryRisk } from '../utils/playerFatigue';
+import { Users, ArrowUp, ArrowDown, Star, Ban, X, RefreshCw, ShieldAlert, Award, ArrowRightLeft, Sparkles, Activity, AlertTriangle } from 'lucide-react';
 
 interface InGameDepthChartModalProps {
   isOpen: boolean;
@@ -192,6 +193,17 @@ export const InGameDepthChartModal: React.FC<InGameDepthChartModalProps> = ({
           ))}
         </div>
 
+        {/* Fatigue & Injury Rules Banner */}
+        <div className="mx-5 mt-3 bg-slate-950/80 border border-amber-500/40 rounded-xl p-3 text-xs text-slate-300 flex items-start space-x-2.5 shadow-sm">
+          <Activity className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold text-amber-300 uppercase tracking-wide">Player Fatigue & Injury System: </span>
+            <span>
+              Safe hits are calculated from <strong>Strength (STR)</strong>: STR ≥ 90: <strong>30 safe hits</strong> | 80-89: <strong>20 safe hits</strong> | ≤ 79: <strong>10 safe hits</strong>. Exceeding safe hits without rest raises injury odds by <strong>+20% per hit</strong>! Benched players recover <strong>2 hits back</strong> per play.
+            </span>
+          </div>
+        </div>
+
         {/* Roster & Depth List */}
         <div className="p-5 overflow-y-auto space-y-6 flex-1">
           {posGroups
@@ -223,11 +235,15 @@ export const InGameDepthChartModal: React.FC<InGameDepthChartModalProps> = ({
                     {playersInPos.map((player, idx) => {
                       const isStarter = idx === 0 && !player.isBenched;
                       const isBenched = player.isBenched;
+                      const str = player.strength || 75;
+                      const safeLimit = getPlayerSafeHits(str);
+                      const currentHits = player.fatigueHits || 0;
+                      const riskInfo = calculateInjuryRisk(currentHits, str);
 
                       return (
                         <div
                           key={player.id ? `${player.id}-${idx}` : `${player.position}-${player.name}-${idx}`}
-                          className={`p-3.5 rounded-xl border transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                          className={`p-3 rounded-lg border transition flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
                             isBenched
                               ? 'bg-rose-950/20 border-rose-900/50 opacity-75'
                               : isStarter
@@ -258,13 +274,34 @@ export const InGameDepthChartModal: React.FC<InGameDepthChartModalProps> = ({
                                 )}
                               </div>
 
-                              <div className="flex items-center space-x-3 text-xs text-slate-400 mt-0.5">
+                              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-400 mt-1">
                                 <span className="font-mono text-white font-bold">OVR {player.ovr}</span>
                                 <span>•</span>
                                 <span>SPD {player.speed}</span>
                                 <span>•</span>
-                                <span>{player.archetype}</span>
+                                <span className="text-amber-400 font-bold font-mono">STR {player.strength}</span>
+                                <span>•</span>
+                                {game.difficulty === 'Hard' && (
+                                  <span className={`px-2 py-0.5 rounded font-mono text-[11px] font-semibold flex items-center space-x-1 ${
+                                    riskInfo.isElevated
+                                      ? 'bg-rose-950 text-rose-300 border border-rose-500'
+                                      : currentHits >= safeLimit - 3 && currentHits > 0
+                                      ? 'bg-amber-950/80 text-amber-300 border border-amber-600'
+                                      : 'bg-slate-900 text-slate-300 border border-slate-700'
+                                  }`}>
+                                    <Activity className="w-3 h-3" />
+                                    <span>Hits: {currentHits}/{safeLimit}</span>
+                                    <span className="opacity-80">({riskInfo.riskPercent}% Risk)</span>
+                                  </span>
+                                )}
                               </div>
+
+                              {game.difficulty === 'Hard' && riskInfo.isElevated && (
+                                <div className="mt-1 text-[11px] text-rose-400 flex items-center space-x-1 font-semibold">
+                                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                  <span>FATIGUED! +{riskInfo.hitsOverThreshold * 20}% risk penalty ({riskInfo.hitsOverThreshold} hit(s) over limit). Bench to rest!</span>
+                                </div>
+                              )}
                             </div>
                           </div>
 
@@ -325,9 +362,10 @@ export const InGameDepthChartModal: React.FC<InGameDepthChartModalProps> = ({
                                   ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
                                   : 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30'
                               }`}
+                              title={isBenched ? "Put player back on the active field" : "Bench player to safely recover 2 hits per play"}
                             >
                               <Ban className="w-3 h-3" />
-                              <span>{isBenched ? 'UNBENCH' : 'BENCH'}</span>
+                              <span>{isBenched ? 'UNBENCH' : 'BENCH (+2 hits)'}</span>
                             </button>
                           </div>
                         </div>

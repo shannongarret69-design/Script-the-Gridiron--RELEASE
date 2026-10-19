@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { ActiveGame, PlayResult } from '../types/game';
 import { X, Trophy, AlertTriangle, CheckCircle2, ChevronUp, Tv } from 'lucide-react';
+import { syncCommentaryWithYards } from '../utils/playEngine';
 
 interface MiniFieldScoreboardBarProps {
   game: ActiveGame;
@@ -394,7 +395,7 @@ export const MiniFieldScoreboardBar: React.FC<MiniFieldScoreboardBarProps> = ({
                 {/* Play Commentary & Details */}
                 <div className="space-y-1">
                   <p className="text-xs sm:text-sm font-semibold leading-snug">
-                    {resultToShow.commentary}
+                    {syncCommentaryWithYards(resultToShow.commentary, resultToShow.yardsGained, resultToShow.isFirstDown)}
                   </p>
                   <div className="flex items-center space-x-3 text-[10px] font-mono opacity-80">
                     {resultToShow.keyPlayer && (

@@ -121,7 +121,7 @@ export const GameScoreboard: React.FC<GameScoreboardProps> = ({
                   <span
                     key={t}
                     className={`w-2 h-1 rounded-sm ${
-                      t <= awayTimeouts ? 'bg-amber-400' : 'bg-slate-700'
+                      t <= (awayTimeouts ?? 3) ? 'bg-amber-400' : 'bg-slate-700'
                     }`}
                   />
                 ))}
@@ -163,7 +163,7 @@ export const GameScoreboard: React.FC<GameScoreboardProps> = ({
                   <span
                     key={t}
                     className={`w-2 h-1 rounded-sm ${
-                      t <= homeTimeouts ? 'bg-amber-400' : 'bg-slate-700'
+                      t <= (homeTimeouts ?? 3) ? 'bg-amber-400' : 'bg-slate-700'
                     }`}
                   />
                 ))}

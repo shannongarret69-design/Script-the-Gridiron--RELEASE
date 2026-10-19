@@ -572,7 +572,7 @@ export const FootballField: React.FC<FootballFieldProps> = ({
         currY = 235 + (finalY - 235) * runProg + Math.sin(runProg * Math.PI * 3) * 6;
         phase = lastResult?.isTouchdown
           ? (isQbKeeper ? '🙌 QB RUSHING TOUCHDOWN!' : '🙌 BREAKAWAY - TOUCHDOWN!')
-          : (isQbKeeper ? `⚡ QB RUSH (+${yardsGained} YDS)` : `🏃 RUSHING UPFIELD (+${yardsGained} YDS)`);
+          : (isQbKeeper ? `⚡ QB RUSH (${yardsGained > 0 ? `+${yardsGained}` : yardsGained} YDS)` : `🏃 RUSHING UPFIELD (${yardsGained > 0 ? `+${yardsGained}` : yardsGained} YDS)`);
       }
 
       return {
@@ -618,8 +618,8 @@ export const FootballField: React.FC<FootballFieldProps> = ({
       phase = lastResult?.isTouchdown
         ? '🙌 SPRINTING TO ENDZONE - TOUCHDOWN!'
         : lastResult?.isFirstDown
-        ? `⚡ FIRST DOWN! (+${yardsGained} YDS)`
-        : `💥 RECEPTION & GAIN (+${yardsGained} YDS)`;
+        ? `⚡ FIRST DOWN! (${yardsGained > 0 ? `+${yardsGained}` : yardsGained} YDS)`
+        : `💥 RECEPTION & GAIN (${yardsGained > 0 ? `+${yardsGained}` : yardsGained} YDS)`;
     }
 
     return {

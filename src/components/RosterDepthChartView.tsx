@@ -11,6 +11,7 @@ import {
   changePosition,
 } from '../utils/rosterUtils';
 import { getMaxOvrForPlayer } from '../utils/playerLeveling';
+import { getPlayerSafeHits, calculateInjuryRisk } from '../utils/playerFatigue';
 import {
   Shield,
   Sparkles,
@@ -282,7 +283,7 @@ export const RosterDepthChartView: React.FC<RosterDepthChartViewProps> = ({
                       return (
                         <div
                           key={player.id ? `${player.id}-${idx}` : `${player.position}-${player.name}-${idx}`}
-                          className={`p-4 rounded-xl border transition flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                          className={`p-3 rounded-lg border transition flex flex-col md:flex-row md:items-center justify-between gap-2 ${
                             isBenched
                               ? 'bg-rose-950/20 border-rose-900/50 opacity-80'
                               : isStarter
@@ -292,13 +293,13 @@ export const RosterDepthChartView: React.FC<RosterDepthChartViewProps> = ({
                         >
                           {/* Player Identity */}
                           <div className="flex items-center space-x-4">
-                            <div className="w-9 h-9 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-center font-mono font-bold text-sm text-amber-400">
+                            <div className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-700 flex items-center justify-center font-mono font-bold text-xs text-amber-400">
                               #{idx + 1}
                             </div>
 
                             <div>
                               <div className="flex items-center space-x-2">
-                                <h4 className="font-display font-black text-lg text-white">
+                                <h4 className="font-display font-black text-base md:text-lg text-white">
                                   {player.name}
                                 </h4>
                                 {isStarter && (
@@ -313,14 +314,32 @@ export const RosterDepthChartView: React.FC<RosterDepthChartViewProps> = ({
                                 )}
                               </div>
 
-                              <div className="flex items-center space-x-3 text-xs text-slate-400 mt-1">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400 mt-1">
                                 <span className="font-mono text-white font-bold">OVR {player.ovr}</span>
                                 <span>•</span>
                                 <span>Age {player.age}</span>
                                 <span>•</span>
                                 <span>SPD {player.speed}</span>
                                 <span>•</span>
-                                <span>STR {player.strength}</span>
+                                <span className="text-amber-400 font-bold font-mono">
+                                  STR {player.strength} (Safe: {getPlayerSafeHits(player.strength || 75)} hits)
+                                </span>
+                                {season.difficulty === 'Hard' && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-rose-400 font-bold font-mono">
+                                      FATIGUE: {player.fatigueHits || 0}
+                                    </span>
+                                  </>
+                                )}
+                                {(player.fatigueHits || 0) > 0 && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="font-mono text-cyan-300 font-semibold">
+                                      Hits: {player.fatigueHits}/{getPlayerSafeHits(player.strength || 75)}
+                                    </span>
+                                  </>
+                                )}
                                 <span>•</span>
                                 <span>{player.archetype}</span>
                                 <span>•</span>
@@ -437,7 +456,7 @@ export const RosterDepthChartView: React.FC<RosterDepthChartViewProps> = ({
                               }`}
                             >
                               <Ban className="w-3.5 h-3.5" />
-                              <span>{isBenched ? 'UNBENCH' : 'BENCH'}</span>
+                              <span>{isBenched ? 'UNBENCH' : 'BENCH (+2 hits)'}</span>
                             </button>
                           </div>
                         </div>
@@ -543,7 +562,7 @@ export const RosterDepthChartView: React.FC<RosterDepthChartViewProps> = ({
                     player.isBenched ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
                   }`}
                 >
-                  {player.isBenched ? 'UNBENCH' : 'BENCH'}
+                  {player.isBenched ? 'UNBENCH' : 'BENCH (+2 hits)'}
                 </button>
               </div>
 

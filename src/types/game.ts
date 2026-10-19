@@ -1,4 +1,5 @@
 import type { FranchisePlayer } from './franchise';
+import type { InjuryEvent } from './injuries';
 
 export type Conference = 'AFC' | 'NFC';
 export type Division = 'East' | 'North' | 'South' | 'West' | 'Pro Bowl';
@@ -149,6 +150,8 @@ export interface PlayResult {
   runVariant?: RunStyleVariant;
   playVariant?: PlayExecutionVariant;
   playCategory?: PlayCategory;
+  triggeredInjury?: InjuryEvent;
+  isPredictablePlayPenalty?: boolean;
 }
 
 export interface DrivePlay {
@@ -177,16 +180,13 @@ export interface GameStats {
   timeOfPossessionSeconds: number;
 }
 
-export interface GameSettings {
-  quarterLengthMinutes: number;
-  weather: 'Sunny' | 'Rain' | 'Snow' | 'Dome' | 'Night';
-  homeJersey: 'Home' | 'ColorRush';
-  awayJersey: 'Away' | 'ColorRush';
-  scriptModeDefault: 'Scripted' | 'Organic';
-  difficulty?: 'Script' | 'Hard';
+export interface PlayerStats {
+  playerName: string;
+  position: string;
+  passingYards: number;
+  rushingYards: number;
+  receivingYards: number;
 }
-
-import { InjuryEvent } from './injuries';
 
 export interface ActiveGame {
   id: string;
@@ -201,12 +201,12 @@ export interface ActiveGame {
   playClockSeconds?: number;
   isClockPaused?: boolean;
   possession: 'home' | 'away';
+  yardLine: number; // 0-100
   down: number;
   distance: number;
-  yardLine: number; // 1 to 99 (from perspective of offense: 100 = opponent goal line)
   driveStartYardLine: number;
-  homeTimeouts: number;
-  awayTimeouts: number;
+  homeTimeouts?: number;
+  awayTimeouts?: number;
   isGameOver: boolean;
   isPlayInProgress: boolean;
   currentPlayAnimation?: {
@@ -219,6 +219,8 @@ export interface ActiveGame {
   playLog: DrivePlay[];
   homeStats: GameStats;
   awayStats: GameStats;
+  homePlayerStats?: PlayerStats[];
+  awayPlayerStats?: PlayerStats[];
   settings: GameSettings;
   seasonGameContext?: {
     week: number;
@@ -247,6 +249,20 @@ export interface ActiveGame {
     patience: number;
     standard: number;
   };
+  lastOffensivePlayId?: string;
+  lastOffensivePlayName?: string;
+  consecutiveSamePlayCount?: number;
+  repeatPlayWarning?: string;
+  fatigueNotice?: string;
+}
+
+export interface GameSettings {
+  quarterLengthMinutes: number;
+  weather: 'Sunny' | 'Rain' | 'Snow' | 'Dome' | 'Night';
+  homeJersey: 'Home' | 'ColorRush';
+  awayJersey: 'Away' | 'ColorRush';
+  scriptModeDefault: 'Scripted' | 'Organic';
+  difficulty?: 'Script' | 'Hard';
 }
 
 export interface ScheduleGame {

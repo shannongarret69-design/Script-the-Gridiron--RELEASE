@@ -3,13 +3,15 @@ import { ActiveGame, Play, PlayResult, ScriptedOutcomeType, NFLTeam, QBThrowingV
 import { InjuryEvent } from '../types/injuries';
 import { DEFAULT_PLAYS } from '../data/defaultPlays';
 import { GameScoreboard } from './GameScoreboard';
+import { GameStatLeadersModal } from './GameStatLeadersModal';
+import { calculatePlayerStats, PlayerStats } from '../utils/statUtils';
 import { FootballField } from './FootballField';
 import { PlayOutcomeScripter } from './PlayOutcomeScripter';
 import { CustomAnnouncementBar } from './CustomAnnouncementBar';
 import { InjuryAlertBanner } from './InjuryAlertBanner';
 import { MiniFieldScoreboardBar } from './MiniFieldScoreboardBar';
 import { FieldCamViewer } from './FieldCamViewer';
-import { executePlay, selectAIOffensivePlay, ScriptExecutionParams, getTeamFailChancePercent } from '../utils/playEngine';
+import { executePlay, selectAIOffensivePlay, ScriptExecutionParams, getTeamFailChancePercent, syncCommentaryWithYards } from '../utils/playEngine';
 import { simulateScore } from '../utils/seasonEngine';
 import { getActiveSlotId, loadSaveSlot, saveToSlot } from '../utils/saveManager';
 import { awardClashVictory } from '../utils/clashManager';
@@ -17,9 +19,11 @@ import { ClashCard, ClashUserData } from '../types/clash';
 import { playSound } from '../utils/audio';
 import { useAuth } from '../hooks/useAuth';
 import { getTeamReceiversAndTEs, getPlayPrimaryTarget } from '../utils/receiverTargeting';
-import { ArrowLeft, BarChart2, CheckCircle2, ChevronRight, RotateCcw, Volume2, Shield, AlertTriangle, Users, Target, Radio, Flame, Tv } from 'lucide-react';
+import { groupPlaysForDropdown } from '../utils/playGrouping';
+import { ArrowLeft, BarChart2, CheckCircle2, ChevronRight, ChevronLeft, ChevronDown, ListFilter, RotateCcw, Volume2, Shield, AlertTriangle, Users, Target, Radio, Flame, Tv, Zap, Activity } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { InGameDepthChartModal } from './InGameDepthChartModal';
+import { getPlayerSafeHits, calculateInjuryRisk } from '../utils/playerFatigue';
 import {
   listenToLobby,
   submitOnlinePlayCall,
@@ -77,6 +81,8 @@ export const GameView: React.FC<GameViewProps> = ({
     ...DEFAULT_PLAYS.filter((p) => p.type === 'Defense'),
   ], [customPlays]);
 
+  const [playViewMode, setPlayViewMode] = useState<'dropdown' | 'cards'>('dropdown');
+
   // Injury & Announcement states
   const [injuredPlayers, setInjuredPlayers] = useState<InjuryEvent[]>([]);
   const [latestInjury, setLatestInjury] = useState<InjuryEvent | null>(null);
@@ -109,6 +115,7 @@ export const GameView: React.FC<GameViewProps> = ({
   const [playClock, setPlayClock] = useState<number>(game.playClockSeconds ?? 40);
   const [isClockPaused, setIsClockPaused] = useState<boolean>(game.isClockPaused ?? false);
   const [delayOfGameNotice, setDelayOfGameNotice] = useState<boolean>(false);
+  const [snapNotice, setSnapNotice] = useState<string | null>(null);
 
   // QB Throwing Variant & Run Style Variant & Target Receiver state (for all modes / Hard Mode)
   const [selectedThrowingVariant, setSelectedThrowingVariant] = useState<QBThrowingVariant | undefined>(undefined);
@@ -145,6 +152,16 @@ export const GameView: React.FC<GameViewProps> = ({
   }, [selectedOffensePlay]);
 
   useEffect(() => {
+    if (!game) return;
+    if ((game.quarter === 3 && game.quarterTimeSeconds === (game.quarterLengthMinutes * 60)) || game.isGameOver) {
+      if (isStatModalOpen) return;
+      const stats = calculatePlayerStats(game.playLog, game.homeTeam.roster || [], game.awayTeam.roster || [], game.homeTeam.id, game.awayTeam.id);
+      setStatLeaders(stats);
+      setIsStatModalOpen(true);
+    }
+  }, [game?.quarter, game?.quarterTimeSeconds, game?.isGameOver]);
+
+  useEffect(() => {
     selectedDefensePlayRef.current = selectedDefensePlay;
   }, [selectedDefensePlay]);
 
@@ -161,7 +178,10 @@ export const GameView: React.FC<GameViewProps> = ({
     claimed: boolean;
     card?: ClashCard;
   }>({ claimed: false });
-  
+
+  const [isStatModalOpen, setIsStatModalOpen] = useState(false);
+  const [statLeaders, setStatLeaders] = useState<{ home: PlayerStats[], away: PlayerStats[] } | null>(null);
+
   const hasHandledGameEndRef = React.useRef<boolean>(false);
 
   useEffect(() => {
@@ -348,6 +368,84 @@ export const GameView: React.FC<GameViewProps> = ({
           playSound.whistle();
           setDelayOfGameNotice(true);
           setTimeout(() => setDelayOfGameNotice(false), 3000);
+
+          // Apply Delay of Game Penalty: Lose 5 yards and lose a down!
+          setGame((prevGame) => {
+            if (!prevGame || prevGame.isGameOver) return prevGame;
+            const newYardLine = prevGame.yardLine - 5;
+            const newDown = prevGame.down + 1;
+
+            if (newYardLine < 1) {
+              // Safety!
+              const isHomePoss = prevGame.possession === 'home';
+              const newHomeScore = isHomePoss ? prevGame.homeScore : prevGame.homeScore + 2;
+              const newAwayScore = isHomePoss ? prevGame.awayScore + 2 : prevGame.awayScore;
+              return {
+                ...prevGame,
+                homeScore: newHomeScore,
+                awayScore: newAwayScore,
+                possession: isHomePoss ? 'away' : 'home',
+                yardLine: 25,
+                down: 1,
+                distance: 10,
+                lastPlayResult: {
+                  outcomeType: 'Safety',
+                  yardsGained: -prevGame.yardLine,
+                  commentary: 'DELAY OF GAME in the endzone! SAFETY! 2 points awarded to the defense.',
+                  isSafety: true,
+                  isTurnover: true,
+                  isTouchdown: false,
+                  isFirstDown: false,
+                  clockElapsedSeconds: 5,
+                  stoppedClock: true,
+                },
+              };
+            }
+
+            if (newDown > 4) {
+              // Turnover on downs due to delay of game on 4th down
+              const isHomePoss = prevGame.possession === 'home';
+              return {
+                ...prevGame,
+                possession: isHomePoss ? 'away' : 'home',
+                yardLine: 100 - newYardLine,
+                down: 1,
+                distance: 10,
+                lastPlayResult: {
+                  outcomeType: 'TackleForLoss',
+                  yardsGained: -5,
+                  commentary: 'DELAY OF GAME on 4th down! 5-yard penalty and Turnover on Downs!',
+                  isTurnover: true,
+                  turnoverType: 'Downs',
+                  isFirstDown: false,
+                  isTouchdown: false,
+                  isSafety: false,
+                  clockElapsedSeconds: 5,
+                  stoppedClock: true,
+                },
+              };
+            }
+
+            return {
+              ...prevGame,
+              yardLine: newYardLine,
+              down: newDown,
+              lastPlayResult: {
+                outcomeType: 'PenaltyOffense',
+                yardsGained: -5,
+                commentary: 'DELAY OF GAME penalty! 5-yard penalty and loss of down.',
+                isFirstDown: false,
+                isTouchdown: false,
+                isSafety: false,
+                isTurnover: false,
+                penaltyYards: -5,
+                penaltyName: 'Delay of Game',
+                clockElapsedSeconds: 5,
+                stoppedClock: true,
+              },
+            };
+          });
+
           return 40;
         }
         return prev - 1;
@@ -428,6 +526,11 @@ export const GameView: React.FC<GameViewProps> = ({
 
   // When the user's team is on defense, show the defensive playbook instead of offensive!
   const isUserOnDefense = defenseTeam.id === userTeamId;
+
+  const currentAvailablePlays = isUserOnDefense ? allDefensivePlays : allOffensivePlays;
+  const currentGroupedPlays = useMemo(() => {
+    return groupPlaysForDropdown(currentAvailablePlays, isUserOnDefense);
+  }, [currentAvailablePlays, isUserOnDefense]);
 
   const primaryTargetInfo = useMemo(() => {
     return getPlayPrimaryTarget(selectedOffensePlay, offenseTeam);
@@ -758,6 +861,13 @@ export const GameView: React.FC<GameViewProps> = ({
 
     const { updatedGame, result } = executePlay(game, offPlayToRun, defPlayToRun, effectiveParams);
 
+    // If fatigue or impact triggered an injury, record and alert immediately
+    if (result.triggeredInjury) {
+      setInjuredPlayers((prev) => [result.triggeredInjury!, ...prev]);
+      setLatestInjury(result.triggeredInjury);
+      playSound.injuryAlert();
+    }
+
     // Trigger 5-Second Hard Mode Play Outcome Popup:
     // "when you click execute on hard mode the message that tells you how the play went should pop up for a 5 seconds right under the scoreboard when scrolled down."
     const isHardModeExecution = game.difficulty === 'Hard' || effectiveParams.outcomeType === 'OrganicSim';
@@ -994,6 +1104,55 @@ export const GameView: React.FC<GameViewProps> = ({
         </div>
       )}
 
+      {/* Fake Snap Alert */}
+      {snapNotice && (
+        <div className="bg-amber-950/90 border border-amber-500 text-amber-200 px-4 py-2 rounded-xl flex items-center justify-between shadow-xl">
+          <div className="flex items-center space-x-2">
+            <Zap className="w-5 h-5 text-amber-400" />
+            <span className="font-display font-bold text-sm">
+              {snapNotice}
+            </span>
+          </div>
+          <span className="text-xs font-mono bg-amber-900/80 px-2 py-0.5 rounded border border-amber-600 text-amber-200">
+            No Play • Clock Reset (:40)
+          </span>
+        </div>
+      )}
+
+      {/* Play Repetition Warning Alert (Called same play > 3 times) */}
+      {game.repeatPlayWarning && (
+        <div className="bg-rose-950/95 border border-rose-500 text-rose-100 px-4 py-2.5 rounded-xl flex items-center justify-between shadow-2xl animate-pulse">
+          <div className="flex items-center space-x-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+            <span className="font-display font-bold text-sm">
+              {game.repeatPlayWarning}
+            </span>
+          </div>
+          <span className="text-xs font-mono bg-rose-900 px-2 py-0.5 rounded border border-rose-700 text-rose-200 shrink-0 hidden sm:inline-block">
+            {game.consecutiveSamePlayCount && game.consecutiveSamePlayCount > 3 ? 'DEFENSE ANTICIPATION' : 'PREDICTABILITY WARNING'}
+          </span>
+        </div>
+      )}
+
+      {/* Player Fatigue Alert Banner */}
+      {game.fatigueNotice && (
+        <div className="bg-amber-950/95 border border-amber-500 text-amber-100 px-4 py-2.5 rounded-xl flex items-center justify-between shadow-2xl">
+          <div className="flex items-center space-x-2.5">
+            <Activity className="w-5 h-5 text-amber-400 shrink-0" />
+            <span className="font-display font-bold text-sm">
+              {game.fatigueNotice}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowDepthChartModal(true)}
+            className="text-xs font-mono bg-amber-500 hover:bg-amber-400 text-slate-950 px-2.5 py-1 rounded font-black tracking-wider uppercase shrink-0 transition"
+          >
+            OPEN DEPTH CHART
+          </button>
+        </div>
+      )}
+
       {/* Broadcast Scoreboard */}
       <GameScoreboard
         game={game}
@@ -1069,7 +1228,9 @@ export const GameView: React.FC<GameViewProps> = ({
                 ? '1ST DOWN'
                 : `${lastResult.yardsGained > 0 ? `+${lastResult.yardsGained}` : lastResult.yardsGained} YDS`}
             </span>
-            <p className="text-sm font-medium">{lastResult.commentary}</p>
+            <p className="text-sm font-medium">
+              {syncCommentaryWithYards(lastResult.commentary, lastResult.yardsGained, lastResult.isFirstDown)}
+            </p>
           </div>
 
           <span className="text-xs font-mono opacity-60 hidden sm:inline-block">
@@ -1116,60 +1277,236 @@ export const GameView: React.FC<GameViewProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2 pt-1">
-                <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
-                  {isUserOnDefense ? 'Select Defensive Play Call' : 'Select Offensive Play Call'}
-                </h3>
-                <span className="text-[11px] text-amber-400 font-mono">
-                  {isUserOnDefense ? `${defenseTeam.abbr} Defensive Playbook` : `${offenseTeam.abbr} Offensive Playbook`}
-                </span>
+              {/* Starters Fatigue & Depth Chart Shortcut (Strength based safe hits: STR 90+: 30 | 80-89: 20 | <=79: 10) */}
+              <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex items-center space-x-1.5 font-display font-bold text-slate-300">
+                    <Activity className="w-3.5 h-3.5 text-amber-400" />
+                    <span>STARTERS FATIGUE & HITS</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDepthChartModal(true)}
+                    className="text-[10px] font-mono text-amber-400 hover:text-amber-300 underline font-bold"
+                  >
+                    Depth Chart & Bench (+2 hits) →
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: 'QB', player: (offenseTeam.roster || []).find((p) => p.position === 'QB' && !p.isBenched) || { name: offenseTeam.starQB, strength: 82, fatigueHits: 0 } },
+                    { label: 'RB', player: (offenseTeam.roster || []).find((p) => p.position === 'RB' && !p.isBenched) || { name: offenseTeam.starRB, strength: 88, fatigueHits: 0 } },
+                    { label: 'WR1', player: (offenseTeam.roster || []).find((p) => p.position === 'WR' && !p.isBenched) || { name: offenseTeam.starWR, strength: 74, fatigueHits: 0 } },
+                  ].map(({ label, player }) => {
+                    const pStr = (player as any).strength || 75;
+                    const safeHits = getPlayerSafeHits(pStr);
+                    const hits = (player as any).fatigueHits || 0;
+                    const risk = calculateInjuryRisk(hits, pStr);
+
+                    return (
+                      <div
+                        key={label}
+                        className={`p-1.5 rounded-lg border text-center transition ${
+                          risk.isElevated
+                            ? 'bg-rose-950/40 border-rose-600 animate-pulse'
+                            : hits >= safeHits - 3 && hits > 0
+                            ? 'bg-amber-950/30 border-amber-600/70'
+                            : 'bg-slate-900 border-slate-800'
+                        }`}
+                      >
+                        <div className="text-[10px] font-bold text-slate-400 flex items-center justify-between">
+                          <span className="font-mono text-amber-400">{label}</span>
+                          <span className="font-mono text-[9px] text-slate-500">STR {pStr}</span>
+                        </div>
+                        <div className="text-[11px] font-bold text-white truncate max-w-full" title={player.name}>
+                          {player.name}
+                        </div>
+                        <div className="text-[10px] font-mono mt-0.5">
+                          <span className={risk.isElevated ? 'text-rose-400 font-bold' : 'text-slate-300'}>
+                            {hits}/{safeHits} hits
+                          </span>{' '}
+                          <span className={`text-[9px] ${risk.isElevated ? 'text-rose-400 font-bold' : 'text-slate-500'}`}>
+                            ({risk.riskPercent}%)
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
-              <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
-                {(isUserOnDefense ? allDefensivePlays : allOffensivePlays).map((play) => {
-                  const isSelected = isUserOnDefense
-                    ? selectedDefensePlay.id === play.id
-                    : selectedOffensePlay.id === play.id;
-                  const isLocked = isPlaySubmittedLocally || isAnimating;
-                  return (
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2 pt-1">
+                <div className="flex items-center space-x-2">
+                  <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
+                    {isUserOnDefense ? 'Defensive Play Call' : 'Offensive Play Call'}
+                  </h3>
+                  <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                    {(isUserOnDefense ? selectedDefensePlay : selectedOffensePlay).formation}
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-[11px] text-amber-400 font-mono hidden sm:inline">
+                    {isUserOnDefense ? `${defenseTeam.abbr} Playbook` : `${offenseTeam.abbr} Playbook`}
+                  </span>
+                  <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[10px] font-mono">
                     <button
-                      key={play.id}
-                      id={`play-call-${play.id}`}
-                      disabled={isLocked}
-                      onClick={() => {
-                        if (isUserOnDefense) {
-                          setSelectedDefensePlay(play);
-                        } else {
-                          setSelectedOffensePlay(play);
+                      type="button"
+                      id="btn-play-view-dropdown"
+                      onClick={() => setPlayViewMode('dropdown')}
+                      className={`px-2 py-0.5 rounded font-bold transition ${
+                        playViewMode === 'dropdown'
+                          ? 'bg-amber-500 text-slate-950 shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Dropdown Menu View (Compact, No Scrolling)"
+                    >
+                      ▾ Menu
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-play-view-cards"
+                      onClick={() => setPlayViewMode('cards')}
+                      className={`px-2 py-0.5 rounded font-bold transition ${
+                        playViewMode === 'cards'
+                          ? 'bg-amber-500 text-slate-950 shadow-sm'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Playbook Cards View"
+                    >
+                      ▦ Cards
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {playViewMode === 'dropdown' ? (
+                /* DROPDOWN MENU PLAY SELECTOR (Zero vertical scrolling needed) */
+                <div className="space-y-2.5">
+                  <div className="relative">
+                    <select
+                      id="gameview-play-dropdown-select"
+                      disabled={isPlaySubmittedLocally || isAnimating}
+                      value={isUserOnDefense ? selectedDefensePlay.id : selectedOffensePlay.id}
+                      onChange={(e) => {
+                        const play = currentAvailablePlays.find((p) => p.id === e.target.value);
+                        if (play) {
+                          if (isUserOnDefense) {
+                            setSelectedDefensePlay(play);
+                          } else {
+                            setSelectedOffensePlay(play);
+                          }
                         }
                       }}
-                      className={`w-full p-2.5 rounded-lg border text-left transition flex items-center justify-between ${
-                        isSelected
-                          ? 'bg-amber-500/20 border-amber-500 text-white shadow-md'
-                          : isLocked 
-                          ? 'bg-slate-900/40 border-slate-800 text-slate-500 cursor-not-allowed'
-                          : 'bg-slate-950/60 hover:bg-slate-800 border-slate-800 text-slate-300'
-                      }`}
+                      className="w-full bg-slate-950 border-2 border-slate-700 hover:border-amber-500 focus:border-amber-400 rounded-lg px-3 py-2 text-xs font-bold text-white focus:outline-none transition cursor-pointer"
                     >
-                      <div>
-                        <div className="flex items-center space-x-2">
-                          <span className="font-display font-bold text-sm">{play.name}</span>
-                          {play.isCustom && (
-                            <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1 rounded font-mono font-bold">
-                              CUSTOM
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-[11px] text-slate-400 font-mono block">
-                          {play.formation} • {play.category}
-                        </span>
-                      </div>
+                      {currentGroupedPlays.map((group) => (
+                        <optgroup key={group.label} label={group.label} className="bg-slate-900 text-slate-300 font-bold">
+                          {group.plays.map((play) => {
+                            const isRepeated = !isUserOnDefense && (play.id === game.lastOffensivePlayId || play.name === game.lastOffensivePlayName);
+                            const repCount = isRepeated ? (game.consecutiveSamePlayCount || 0) : 0;
+                            return (
+                              <option key={play.id} value={play.id} className="bg-slate-950 text-white font-normal py-1">
+                                {play.name} ({play.formation} • {play.category}){repCount >= 3 ? ` ⚠️ (${repCount}x in row - Defense read!)` : ''}
+                              </option>
+                            );
+                          })}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
 
-                      {isSelected && <CheckCircle2 className="w-4 h-4 text-amber-400" />}
-                    </button>
-                  );
-                })}
-              </div>
+                  {/* Selected Play Compact Overview */}
+                  {(() => {
+                    const activePlay = isUserOnDefense ? selectedDefensePlay : selectedOffensePlay;
+                    const isRep = !isUserOnDefense && (activePlay.id === game.lastOffensivePlayId || activePlay.name === game.lastOffensivePlayName);
+                    const repCount = isRep ? (game.consecutiveSamePlayCount || 0) : 0;
+
+                    return (
+                      <div className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800 space-y-1 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-display font-black text-sm text-white">
+                            {activePlay.name}
+                          </span>
+                          <div className="flex items-center space-x-1.5">
+                            <span className="text-[10px] font-mono uppercase bg-slate-900 px-2 py-0.5 rounded text-amber-300 border border-slate-700">
+                              {activePlay.formation}
+                            </span>
+                            <span className="text-[10px] font-mono uppercase bg-slate-900 px-2 py-0.5 rounded text-cyan-300 border border-slate-700">
+                              {activePlay.category}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-tight">
+                          {activePlay.description || `${activePlay.name} formation`}
+                        </p>
+                        {repCount >= 3 && (
+                          <div className="text-[10px] font-mono font-bold text-rose-400 bg-rose-950/50 border border-rose-600/50 px-2 py-0.5 rounded mt-1 flex items-center space-x-1">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Run {repCount}x in a row: Opponent defense has read this play!</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                /* EXPANDED PLAY CARDS LIST (If user explicitly toggles it) */
+                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                  {(isUserOnDefense ? allDefensivePlays : allOffensivePlays).map((play) => {
+                    const isSelected = isUserOnDefense
+                      ? selectedDefensePlay.id === play.id
+                      : selectedOffensePlay.id === play.id;
+                    const isLocked = isPlaySubmittedLocally || isAnimating;
+
+                    const isRepeatedPlay = !isUserOnDefense && (play.id === game.lastOffensivePlayId || play.name === game.lastOffensivePlayName);
+                    const repCount = isRepeatedPlay ? (game.consecutiveSamePlayCount || 0) : 0;
+
+                    return (
+                      <button
+                        key={play.id}
+                        id={`play-call-${play.id}`}
+                        disabled={isLocked}
+                        onClick={() => {
+                          if (isUserOnDefense) {
+                            setSelectedDefensePlay(play);
+                          } else {
+                            setSelectedOffensePlay(play);
+                          }
+                        }}
+                        className={`w-full p-2.5 rounded-lg border text-left transition flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-amber-500/20 border-amber-500 text-white shadow-md'
+                            : isLocked 
+                            ? 'bg-slate-900/40 border-slate-800 text-slate-500 cursor-not-allowed'
+                            : 'bg-slate-950/60 hover:bg-slate-800 border-slate-800 text-slate-300'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <span className="font-display font-bold text-sm">{play.name}</span>
+                            {play.isCustom && (
+                              <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1 rounded font-mono font-bold">
+                                CUSTOM
+                              </span>
+                            )}
+                            {repCount >= 3 && (
+                              <span className="text-[9px] font-mono font-bold bg-rose-950 text-rose-300 border border-rose-600 px-1.5 py-0.5 rounded">
+                                ⚠️ {repCount}x in row (Defense read!)
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-slate-400 font-mono block">
+                            {play.formation} • {play.category}
+                          </span>
+                        </div>
+
+                        {isSelected && <CheckCircle2 className="w-4 h-4 text-amber-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* SECTION RIGHT UNDER THE PLAYCALL SECTION: DEFENSE SCHEME OR OFFENSE VARIANTS */}
@@ -1545,6 +1882,15 @@ export const GameView: React.FC<GameViewProps> = ({
               offenseTeam={offenseTeam}
               defenseTeam={defenseTeam}
               offensePlay={selectedOffensePlay}
+              allOffensivePlays={allOffensivePlays}
+              allDefensivePlays={allDefensivePlays}
+              selectedOffensePlay={selectedOffensePlay}
+              selectedDefensePlay={selectedDefensePlay}
+              onSelectOffensePlay={setSelectedOffensePlay}
+              onSelectDefensePlay={setSelectedDefensePlay}
+              lastOffensivePlayId={game.lastOffensivePlayId}
+              lastOffensivePlayName={game.lastOffensivePlayName}
+              consecutiveSamePlayCount={game.consecutiveSamePlayCount}
               currentYardLine={game.yardLine}
               currentDown={game.down}
               currentDistance={game.distance}
@@ -1577,6 +1923,27 @@ export const GameView: React.FC<GameViewProps> = ({
               isOnlineMatch={Boolean(game.onlineMatchRoomId)}
               isPlaySubmittedLocally={isPlaySubmittedLocally}
               isOpponentPlaySubmitted={isOpponentPlaySubmitted}
+              onResetPlayClock={() => setPlayClock(40)}
+              onNotice={(msg) => {
+                setSnapNotice(msg);
+                setTimeout(() => setSnapNotice(null), 4000);
+                if (game.difficulty === 'Hard') {
+                  setHardModePopup({
+                    result: {
+                      outcomeType: 'NoGain',
+                      yardsGained: 0,
+                      commentary: msg,
+                      isTouchdown: false,
+                      isTurnover: false,
+                      isSafety: false,
+                      isFirstDown: false,
+                      clockElapsedSeconds: 0,
+                      stoppedClock: true,
+                    },
+                    timestamp: Date.now(),
+                  });
+                }
+              }}
             />
           </div>
         </div>
@@ -1721,6 +2088,14 @@ export const GameView: React.FC<GameViewProps> = ({
       )}
 
       {/* In-Game Depth Chart Modal */}
+      <GameStatLeadersModal
+        isOpen={isStatModalOpen}
+        onClose={() => setIsStatModalOpen(false)}
+        homeStats={statLeaders?.home || []}
+        awayStats={statLeaders?.away || []}
+        homeTeamName={game.homeTeam.name}
+        awayTeamName={game.awayTeam.name}
+      />
       <InGameDepthChartModal
         isOpen={showDepthChartModal}
         onClose={() => setShowDepthChartModal(false)}

@@ -5,8 +5,9 @@ import { parseCustomAnnouncementForInjury } from '../utils/injuryParser';
 import { ScriptExecutionParams } from '../utils/playEngine';
 import { playSound } from '../utils/audio';
 import { getTeamReceiversAndTEs, getPlayPrimaryTarget } from '../utils/receiverTargeting';
+import { groupPlaysForDropdown } from '../utils/playGrouping';
 import { HardModeFieldScorecard } from './HardModeFieldScorecard';
-import { Sparkles, Sliders, PlayCircle, Zap, ShieldAlert, Flag, HelpCircle, CheckCircle2, Clock, Shield, Target, Radio, Flame } from 'lucide-react';
+import { Sparkles, Sliders, PlayCircle, Zap, ShieldAlert, Flag, HelpCircle, CheckCircle2, Clock, Shield, Target, Radio, Flame, ChevronDown } from 'lucide-react';
 
 interface PlayOutcomeScripterProps {
   offenseTeam: NFLTeam;
@@ -41,6 +42,17 @@ interface PlayOutcomeScripterProps {
   isOnlineMatch?: boolean;
   isPlaySubmittedLocally?: boolean;
   isOpponentPlaySubmitted?: boolean;
+  onResetPlayClock?: () => void;
+  onNotice?: (msg: string) => void;
+  allOffensivePlays?: Play[];
+  allDefensivePlays?: Play[];
+  selectedOffensePlay?: Play;
+  selectedDefensePlay?: Play;
+  onSelectOffensePlay?: (play: Play) => void;
+  onSelectDefensePlay?: (play: Play) => void;
+  lastOffensivePlayId?: string;
+  lastOffensivePlayName?: string;
+  consecutiveSamePlayCount?: number;
 }
 
 export const PlayOutcomeScripter: React.FC<PlayOutcomeScripterProps> = ({
@@ -76,6 +88,17 @@ export const PlayOutcomeScripter: React.FC<PlayOutcomeScripterProps> = ({
   isOnlineMatch = false,
   isPlaySubmittedLocally = false,
   isOpponentPlaySubmitted = false,
+  allOffensivePlays = [],
+  allDefensivePlays = [],
+  selectedOffensePlay,
+  selectedDefensePlay,
+  onSelectOffensePlay,
+  onSelectDefensePlay,
+  lastOffensivePlayId,
+  lastOffensivePlayName,
+  consecutiveSamePlayCount = 0,
+  onResetPlayClock,
+  onNotice,
 }) => {
   const [activeTab, setActiveTab] = useState<'presets' | 'custom' | 'draw'>('presets');
   const [selectedType, setSelectedType] = useState<ScriptedOutcomeType>('FirstDown');
@@ -88,7 +111,19 @@ export const PlayOutcomeScripter: React.FC<PlayOutcomeScripterProps> = ({
   const [internalRunVariant, setInternalRunVariant] = useState<RunStyleVariant | undefined>(undefined);
   const runVariant = externalRunVariant !== undefined ? externalRunVariant : internalRunVariant;
 
-  const isRunPlay = offensePlay.category === 'Run';
+  const currentActivePlay = isUserOnDefense
+    ? (selectedDefensePlay || allDefensivePlays[0] || offensePlay)
+    : (selectedOffensePlay || offensePlay);
+
+  const availablePlays = isUserOnDefense ? allDefensivePlays : allOffensivePlays;
+  const groupedPlays = useMemo(() => {
+    return groupPlaysForDropdown(availablePlays, isUserOnDefense);
+  }, [availablePlays, isUserOnDefense]);
+
+  const isCurrentPlayRepeated = !isUserOnDefense && (currentActivePlay.id === lastOffensivePlayId || currentActivePlay.name === lastOffensivePlayName);
+  const activeRepCount = isCurrentPlayRepeated ? (consecutiveSamePlayCount || 0) : 0;
+
+  const isRunPlay = currentActivePlay.category === 'Run';
 
   const handleSetThrowingVariant = (v: QBThrowingVariant | undefined) => {
     setInternalThrowingVariant(v);
@@ -106,8 +141,8 @@ export const PlayOutcomeScripter: React.FC<PlayOutcomeScripterProps> = ({
 
   // Receiver & 1st Read Targeting for this team only
   const primaryTargetInfo = useMemo(() => {
-    return getPlayPrimaryTarget(offensePlay, offenseTeam);
-  }, [offensePlay, offenseTeam]);
+    return getPlayPrimaryTarget(currentActivePlay, offenseTeam);
+  }, [currentActivePlay, offenseTeam]);
 
   const teamReceivers = useMemo(() => {
     return getTeamReceiversAndTEs(offenseTeam.id);
@@ -336,6 +371,69 @@ export const PlayOutcomeScripter: React.FC<PlayOutcomeScripterProps> = ({
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 max-w-md mx-auto space-y-3">
+            {/* IN-GAME PLAY CALL DROPDOWN MENU - DIRECT ACCESS, NO SCROLLING UP REQUIRED! */}
+            {availablePlays.length > 0 && (
+              <div className="text-left space-y-1.5 pb-3 border-b border-slate-800">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="hardmode-play-call-dropdown" className="text-xs font-bold text-slate-200 flex items-center space-x-1.5">
+                    <span className="text-amber-400">{isUserOnDefense ? '🛡️' : '🏈'}</span>
+                    <span>{isUserOnDefense ? 'Call Defensive Play' : 'Call Offensive Play'}</span>
+                  </label>
+                  <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                    {currentActivePlay.formation} • {currentActivePlay.category}
+                  </span>
+                </div>
+
+                <div className="relative">
+                  <select
+                    id="hardmode-play-call-dropdown"
+                    value={currentActivePlay.id}
+                    disabled={disabled || isPlaySubmittedLocally}
+                    onChange={(e) => {
+                      const selected = availablePlays.find((p) => p.id === e.target.value);
+                      if (selected) {
+                        if (isUserOnDefense) {
+                          onSelectDefensePlay?.(selected);
+                        } else {
+                          onSelectOffensePlay?.(selected);
+                        }
+                      }
+                    }}
+                    className="w-full bg-slate-950 border-2 border-slate-700 hover:border-amber-500 focus:border-amber-400 rounded-lg px-3 py-2 text-xs font-bold text-white focus:outline-none transition cursor-pointer"
+                  >
+                    {groupedPlays.map((group) => (
+                      <optgroup key={group.label} label={group.label} className="bg-slate-900 text-slate-300 font-bold">
+                        {group.plays.map((play) => {
+                          const isRep = !isUserOnDefense && (play.id === lastOffensivePlayId || play.name === lastOffensivePlayName);
+                          const count = isRep ? (consecutiveSamePlayCount || 0) : 0;
+                          return (
+                            <option
+                              key={play.id}
+                              value={play.id}
+                              className="bg-slate-950 text-white font-normal py-1"
+                            >
+                              {play.name} ({play.formation} • {play.category}){count >= 3 ? ` ⚠️ (${count}x in a row - Defense read!)` : ''}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] pt-1">
+                  <span className="text-slate-400 truncate max-w-[280px]">
+                    {currentActivePlay.description || `${currentActivePlay.name} (${currentActivePlay.formation})`}
+                  </span>
+                  {activeRepCount >= 3 && (
+                    <span className="text-[9px] font-mono font-bold bg-rose-950 text-rose-300 border border-rose-600 px-1.5 py-0.5 rounded shrink-0 ml-1">
+                      ⚠️ {activeRepCount}x in a row (Defense read!)
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between">
               <div className="text-left space-y-0.5">
                 <span className="text-white text-xs font-bold block">Pre-Snap Shift / Motion</span>
@@ -657,9 +755,98 @@ export const PlayOutcomeScripter: React.FC<PlayOutcomeScripterProps> = ({
               </span>
             </button>
           </div>
+
+          {/* FAKE SNAP BUTTON (Hard Mode Offense Only, under Execute button) */}
+          {!isUserOnDefense && (difficulty === 'Hard' || isClashMode) && (
+            <div className="pt-2 flex justify-center">
+              <button
+                type="button"
+                id="btn-fake-snap"
+                disabled={disabled || isPlaySubmittedLocally}
+                onClick={() => {
+                  const roll = Math.random();
+                  if (roll < 0.30) {
+                    // 30% chance: Defense offsides (+5 yards, automatic 1st down)
+                    playSound.whistle();
+                    onExecute({
+                      outcomeType: 'PenaltyDefense',
+                      customYards: 5,
+                      customCommentary: `FAKE SNAP! The defense flinches and jumps early across the line of scrimmage! OFFSIDES on the defense! 5-yard penalty and automatic 1st down!`,
+                      preSnapMotion: isPreSnapMotion,
+                      isMaxProtection: isMaxProtection,
+                    });
+                  } else if (roll < 0.45) {
+                    // 15% chance: Offense false start (-5 yards)
+                    playSound.whistle();
+                    onExecute({
+                      outcomeType: 'PenaltyOffense',
+                      customYards: -5,
+                      customCommentary: `FAKE SNAP! The offensive tackle flinches before the snap! FALSE START on the offense! 5-yard penalty, repeat down.`,
+                      preSnapMotion: isPreSnapMotion,
+                      isMaxProtection: isMaxProtection,
+                    });
+                  } else {
+                    // 55% chance: Defense holds ground (NO PLAY AT ALL, no down lost, play clock reset to 40)
+                    playSound.whistle();
+                    if (onResetPlayClock) onResetPlayClock();
+                    if (onNotice) {
+                      onNotice('FAKE SNAP! Defense holds ground. Play clock reset to 40. Replay the down.');
+                    }
+                  }
+                  setIsPreSnapMotion(false);
+                  setIsMaxProtection(false);
+                }}
+                className="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-display font-black text-xs uppercase tracking-wider transition shadow-md flex items-center space-x-2 cursor-pointer disabled:opacity-75"
+              >
+                <span>⚡ FAKE SNAP (Hard Mode)</span>
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <>
+          {/* PLAY CALL DROPDOWN MENU - DIRECT ACCESS WITHOUT SCROLLING */}
+          {availablePlays.length > 0 && (
+            <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800 mb-3 space-y-1.5 text-left">
+              <div className="flex items-center justify-between">
+                <label htmlFor="scriptmode-play-call-dropdown" className="text-xs font-bold text-slate-200 flex items-center space-x-1.5">
+                  <span className="text-amber-400">{isUserOnDefense ? '🛡️' : '🏈'}</span>
+                  <span>{isUserOnDefense ? 'Selected Defensive Play Call' : 'Selected Offensive Play Call'}</span>
+                </label>
+                <span className="text-[10px] font-mono font-bold text-amber-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                  {currentActivePlay.formation} • {currentActivePlay.category}
+                </span>
+              </div>
+
+              <select
+                id="scriptmode-play-call-dropdown"
+                value={currentActivePlay.id}
+                disabled={disabled}
+                onChange={(e) => {
+                  const selected = availablePlays.find((p) => p.id === e.target.value);
+                  if (selected) {
+                    if (isUserOnDefense) {
+                      onSelectDefensePlay?.(selected);
+                    } else {
+                      onSelectOffensePlay?.(selected);
+                    }
+                  }
+                }}
+                className="w-full bg-slate-900 border border-slate-700 hover:border-amber-500 focus:border-amber-400 rounded-lg px-3 py-2 text-xs font-bold text-white focus:outline-none transition cursor-pointer"
+              >
+                {groupedPlays.map((group) => (
+                  <optgroup key={group.label} label={group.label} className="bg-slate-900 text-slate-300 font-bold">
+                    {group.plays.map((play) => (
+                      <option key={play.id} value={play.id} className="bg-slate-950 text-white font-normal py-1">
+                        {play.name} ({play.formation} • {play.category})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Quarter Time Controller: Dropdown ("Remaining game time / How much is taken off") + Input */}
           <div className="bg-slate-950/80 p-3 rounded-lg border border-slate-800 mb-3 space-y-2">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">

@@ -1,7 +1,12 @@
 import { ActiveGame, Play, PlayResult, ScriptedOutcomeType, NFLTeam, QBThrowingVariant, RunStyleVariant, PlayExecutionVariant } from '../types/game';
+import { FranchisePlayer } from '../types/franchise';
+import { InjuryEvent } from '../types/injuries';
 import { playSound } from './audio';
 import { getPlayPrimaryTarget } from './receiverTargeting';
+import { getStartersFromRoster } from './rosterUtils';
 import { DEFAULT_PLAYS } from '../data/defaultPlays';
+import { processPlayFatigueAndInjuries, processBenchRecovery } from './playerFatigue';
+import { generateInitialTeamRoster } from './aiRosterGenerator';
 import {
   isWayneGarrettEquipped,
   isCamNewtonEquipped,
@@ -30,6 +35,73 @@ export interface ScriptExecutionParams {
   throwingVariant?: QBThrowingVariant;
   runVariant?: RunStyleVariant;
   playVariant?: PlayExecutionVariant;
+  isFakeSnapNeutral?: boolean;
+}
+
+/**
+ * Synchronizes the number of yards mentioned in play commentary text with actual yards gained.
+ * Ensures the commentary text and "Gain: +/-X YDS" are always 100% matched and consistent.
+ */
+export function syncCommentaryWithYards(
+  commentary: string,
+  yardsGained: number,
+  isFirstDown?: boolean
+): string {
+  if (!commentary) return commentary;
+  const absYards = Math.abs(yardsGained);
+  const yardWord = absYards === 1 ? 'yard' : 'yards';
+  let updated = commentary;
+
+  // Replace penalty yards: e.g. "15 yard penalty", "10-yard penalty", "5-yard penalty"
+  updated = updated.replace(/\b\d+(\s*|-)(yard|yd) penalty\b/gi, `${absYards}$1$2 penalty`);
+
+  // Replace losses / sacks: e.g. "loss of 10 yards" or "10-yard loss" or "8-yard sack"
+  updated = updated.replace(/\bloss of \d+ yards?\b/gi, `loss of ${absYards} ${yardWord}`);
+  updated = updated.replace(/\b\d+-yard (loss|sack|tackle for loss)\b/gi, `${absYards}-yard $1`);
+
+  // Replace execution breakdown halving: e.g. "cutting the gain in half to 10 yards", "halving the pickup to 10 yards", "salvage only 10 yards", "stopped short after 10 yards", "(10 yd gain)"
+  updated = updated.replace(/\bcutting the gain in half to \d+ yards?\b/gi, `cutting the gain in half to ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bhalving the pickup to \d+ yards?\b/gi, `halving the pickup to ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bsalvage only \d+ yards?\b/gi, `salvage only ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bstopped short after \d+ yards?\b/gi, `stopped short after ${absYards} ${yardWord}`);
+  updated = updated.replace(/\b\(\d+ yd gain\)\b/gi, `(${absYards} yd gain)`);
+  updated = updated.replace(/\btackled for \d+ yards?\b/gi, `tackled for ${absYards} ${yardWord}`);
+  updated = updated.replace(/\breduced \d+-yard gain\b/gi, `reduced ${absYards}-yard gain`);
+  updated = updated.replace(/\bawkward \d+-yard catch\b/gi, `awkward ${absYards}-yard catch`);
+
+  // Replace positive gains: e.g. "completion of 12 yards", "plows forward for 12 yards", "pickup of 12 yards", "picking up 12 hard-earned yards"
+  updated = updated.replace(/\bcompletion of \d+ yards?\b/gi, `completion of ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bplows forward for \d+ yards?\b/gi, `plows forward for ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bpickup of \d+ yards?\b/gi, `pickup of ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bpicking up \d+ (hard-earned )?yards?\b/gi, `picking up ${absYards} $1${yardWord}`);
+  updated = updated.replace(/\bgains \d+ yards?\b/gi, `gains ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bgain of \d+ yards?\b/gi, `gain of ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bbursting for \d+ yards?\b/gi, `bursting for ${absYards} ${yardWord}`);
+  updated = updated.replace(/\btrucks a linebacker for \d+ yards?\b/gi, `trucks a linebacker for ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bchurning (his )?legs for( a solid)? \d+-?yard( pickup)?\b/gi, `churning $1legs for$2 ${absYards}-yard$3`);
+  updated = updated.replace(/\bchurning (his )?legs for \d+ yards?\b/gi, `churning $1legs for ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bdelivers a strike to (.*?) while being hit for \d+ yards?\b/gi, `delivers a strike to $1 while being hit for ${absYards} ${yardWord}`);
+  updated = updated.replace(/\bcompletion while being driven into the turf for \d+ yards?\b/gi, `completion while being driven into the turf for ${absYards} ${yardWord}`);
+
+  // Replace hyphenated gains: e.g. "12-yard laser", "12-yard gain", "12-yard pickup", "12-yard run", "12-yard QB gain", "12-yard power run", "12-yard explosive gain", "12-yard carry"
+  updated = updated.replace(/\b\d+-yard (laser|gain|pickup|run|QB gain|power run|explosive gain|carry|catch|completion|play)\b/gi, `${absYards}-yard $1`);
+
+  // Replace (+X YDS) tags if any in commentary
+  updated = updated.replace(/\(\+?-?\d+\s*YDS\)/gi, `(${yardsGained > 0 ? '+' : ''}${yardsGained} YDS)`);
+
+  // Keep first down text in sync if explicitly passed
+  if (isFirstDown === false) {
+    updated = updated.replace(/\s+and a (huge QB )?FIRST DOWN!/gi, '.');
+    updated = updated.replace(/\s+FIRST DOWN!/gi, '');
+  } else if (isFirstDown === true && !updated.includes('FIRST DOWN') && !updated.includes('TOUCHDOWN') && !updated.includes('Safety')) {
+    if (updated.endsWith('.')) {
+      updated = updated.slice(0, -1) + ' and a FIRST DOWN!';
+    } else if (updated.endsWith('!')) {
+      updated = updated.slice(0, -1) + ' and a FIRST DOWN!';
+    }
+  }
+
+  return updated;
 }
 
 export function calculateDLineDominance(offTeam: NFLTeam, defTeam: NFLTeam, isClashMode: boolean = false) {
@@ -63,6 +135,21 @@ export function calculateDLineDominance(offTeam: NFLTeam, defTeam: NFLTeam, isCl
   };
 }
 
+export function getKickerMaxRange(team: NFLTeam): number {
+  let kickerOvr = 85;
+  if (team.roster && team.roster.length > 0) {
+    const kicker = team.roster
+      .filter((p) => p.position === 'K' && !p.isBenched)
+      .sort((a, b) => (a.depthChartOrder ?? 999) - (b.depthChartOrder ?? 999) || b.ovr - a.ovr)[0];
+    if (kicker) {
+      kickerOvr = kicker.ovr;
+    }
+  }
+  if (kickerOvr >= 90) return 70;
+  if (kickerOvr >= 80) return 50;
+  return 40;
+}
+
 export function executePlay(
   game: ActiveGame,
   offensePlay: Play,
@@ -70,11 +157,32 @@ export function executePlay(
   scriptParams: ScriptExecutionParams
 ): { updatedGame: ActiveGame; result: PlayResult } {
   const isHomePoss = game.possession === 'home';
-  const offTeam: NFLTeam = isHomePoss ? game.homeTeam : game.awayTeam;
-  const defTeam: NFLTeam = isHomePoss ? game.awayTeam : game.homeTeam;
+  let offTeam: NFLTeam = isHomePoss ? game.homeTeam : game.awayTeam;
+  let defTeam: NFLTeam = isHomePoss ? game.awayTeam : game.homeTeam;
+
+  // Enforce depth chart: only use active players on depth chart
+  if (offTeam.roster && offTeam.roster.length > 0) {
+    const starters = getStartersFromRoster(offTeam.roster, offTeam);
+    offTeam = { ...offTeam, ...starters };
+  }
+  if (defTeam.roster && defTeam.roster.length > 0) {
+    const starters = getStartersFromRoster(defTeam.roster, defTeam);
+    defTeam = { ...defTeam, ...starters };
+  }
 
   const currentYardLine = game.yardLine; // 1 to 99 (100 = opponent goal line)
   const distanceToGoal = 100 - currentYardLine;
+
+  const fgDistance = 100 - currentYardLine + 17;
+  const maxKickerRange = getKickerMaxRange(offTeam);
+  const isFieldGoalAttempt = offensePlay.id === 'st-field-goal' || scriptParams.outcomeType === 'FieldGoalGood';
+  if (isFieldGoalAttempt && fgDistance > maxKickerRange) {
+    scriptParams = {
+      ...scriptParams,
+      outcomeType: 'FieldGoalMiss',
+      customCommentary: `The kick from ${fgDistance} yards out falls short and wide! (Kicker OVR max range is ${maxKickerRange} yards). No good!`,
+    };
+  }
 
   let result: PlayResult;
 
@@ -189,6 +297,126 @@ export function executePlay(
     result = buildScriptedResult(scriptParams, offensePlay, defensePlay, offTeam, defTeam, distanceToGoal, isClashMode);
   }
 
+  // Repetition Tracking: Check if user or team does the same play more than 3 times in a row
+  const isSamePlay =
+    (game.lastOffensivePlayId && game.lastOffensivePlayId === offensePlay.id) ||
+    (game.lastOffensivePlayName && game.lastOffensivePlayName === offensePlay.name);
+  const consecutivePlayCount = isSamePlay ? (game.consecutiveSamePlayCount || 1) + 1 : 1;
+
+  // Make opposing team more likely to get a sack, INT, or incomplete a pass if the same play is run more than 3 times in a row
+  if (
+    consecutivePlayCount > 3 &&
+    !scriptParams.isFakeSnapNeutral &&
+    scriptParams.outcomeType !== 'PenaltyDefense' &&
+    scriptParams.outcomeType !== 'PenaltyOffense' &&
+    offensePlay.type !== 'SpecialTeams'
+  ) {
+    const isPass = offensePlay.category !== 'Run';
+    const qb = offTeam.starQB;
+    const wr = offTeam.starWR;
+    const defStar = defTeam.starDef;
+
+    if (isPass) {
+      const repRoll = Math.random();
+      if (repRoll < 0.35) {
+        // Incomplete pass
+        result = {
+          outcomeType: 'Incomplete',
+          yardsGained: 0,
+          commentary: `[DEFENSE READ • ${consecutivePlayCount}X IN A ROW] The opposing defense anticipated '${offensePlay.name}'! Secondary bracketed ${wr} and swatted the pass away incomplete!`,
+          isTouchdown: false,
+          isTurnover: false,
+          isSafety: false,
+          isFirstDown: false,
+          clockElapsedSeconds: 6,
+          stoppedClock: true,
+          isPredictablePlayPenalty: true,
+          skipFailureCheck: true,
+        };
+      } else if (repRoll < 0.65) {
+        // Sack!
+        const sackLoss = -(4 + Math.floor(Math.random() * 5));
+        result = {
+          outcomeType: 'Sack',
+          yardsGained: sackLoss,
+          commentary: `[DEFENSE READ • ${consecutivePlayCount}X IN A ROW] Running '${offensePlay.name}' ${consecutivePlayCount} times in a row was telegraphed! ${defStar} shot through the gap unblocked and dragged down ${qb} for a ${Math.abs(sackLoss)}-yard sack!`,
+          isTouchdown: false,
+          isTurnover: false,
+          isSafety: false,
+          isFirstDown: false,
+          clockElapsedSeconds: 28,
+          stoppedClock: false,
+          isPredictablePlayPenalty: true,
+          skipFailureCheck: true,
+        };
+      } else if (repRoll < 0.85) {
+        // Interception!
+        result = {
+          outcomeType: 'Interception',
+          yardsGained: 0,
+          commentary: `[DEFENSE READ • ${consecutivePlayCount}X IN A ROW] Completely telegraphed! Cornerback undercut the predictable route on '${offensePlay.name}', picked off the pass, and secured the turnover!`,
+          isTouchdown: false,
+          isTurnover: true,
+          turnoverType: 'Interception',
+          isSafety: false,
+          isFirstDown: false,
+          clockElapsedSeconds: 15,
+          stoppedClock: true,
+          isPredictablePlayPenalty: true,
+          skipFailureCheck: true,
+        };
+      } else {
+        // Heavily contested short completion
+        result = {
+          outcomeType: 'ShortGain',
+          yardsGained: Math.min(2, Math.max(0, distanceToGoal - 1)),
+          commentary: `[DEFENSE READ • ${consecutivePlayCount}X IN A ROW] The defense knew the route combinations on '${offensePlay.name}', converging to tackle ${wr} immediately after a contested 1-2 yard catch.`,
+          isTouchdown: false,
+          isTurnover: false,
+          isSafety: false,
+          isFirstDown: false,
+          clockElapsedSeconds: 25,
+          stoppedClock: false,
+          isPredictablePlayPenalty: true,
+          skipFailureCheck: true,
+        };
+      }
+    } else {
+      // Run play repeated > 3 times in a row
+      const repRoll = Math.random();
+      if (repRoll < 0.75) {
+        const lossYards = -(2 + Math.floor(Math.random() * 3));
+        result = {
+          outcomeType: 'TackleForLoss',
+          yardsGained: lossYards,
+          commentary: `[DEFENSE READ • ${consecutivePlayCount}X IN A ROW] Opposing defense stacked 9 in the box anticipating '${offensePlay.name}'! ${offTeam.starRB} was met in the backfield by ${defStar} for a ${Math.abs(lossYards)}-yard loss!`,
+          isTouchdown: false,
+          isTurnover: false,
+          isSafety: false,
+          isFirstDown: false,
+          clockElapsedSeconds: 26,
+          stoppedClock: false,
+          isPredictablePlayPenalty: true,
+          skipFailureCheck: true,
+        };
+      } else {
+        result = {
+          outcomeType: 'ShortGain',
+          yardsGained: 0,
+          commentary: `[DEFENSE READ • ${consecutivePlayCount}X IN A ROW] Defensive line clogged all interior lanes on '${offensePlay.name}', stuffing the play at the line for no gain.`,
+          isTouchdown: false,
+          isTurnover: false,
+          isSafety: false,
+          isFirstDown: false,
+          clockElapsedSeconds: 28,
+          stoppedClock: false,
+          isPredictablePlayPenalty: true,
+          skipFailureCheck: true,
+        };
+      }
+    }
+  }
+
   if (effectiveThrowingVariant) {
     result.throwingVariant = effectiveThrowingVariant;
   }
@@ -199,8 +427,12 @@ export function executePlay(
     result.playVariant = scriptParams.playVariant;
   }
 
-  // Apply netSuccessBoost to yardage under Hard Mode
-  if (game.difficulty === 'Hard' && netSuccessBoost !== 0) {
+  // Apply netSuccessBoost to yardage under Hard Mode (only for organic offensive plays, not penalties or explicit custom yards)
+  const isPenalty = result.outcomeType === 'PenaltyDefense' || result.outcomeType === 'PenaltyOffense';
+  const isSpecialTeams = offensePlay.type === 'SpecialTeams';
+  const hasCustomYards = scriptParams.customYards !== undefined;
+
+  if (game.difficulty === 'Hard' && netSuccessBoost !== 0 && !isPenalty && !isSpecialTeams && !hasCustomYards) {
     if (result.yardsGained > 0) {
       result.yardsGained = Math.max(1, Math.round(result.yardsGained * (1 + netSuccessBoost)));
     } else if (result.yardsGained < 0) {
@@ -219,6 +451,9 @@ export function executePlay(
     result.yardsGained = Math.min(result.yardsGained, Math.max(1, distanceToGoal - 1));
     result.commentary = result.commentary.replace(/TOUCHDOWN.*!/i, `stopped inside the 1-yard line!`);
   }
+
+  // Synchronize commentary text with actual yards gained so the text and "Gain:" are always 100% matched
+  result.commentary = syncCommentaryWithYards(result.commentary, result.yardsGained);
 
   if (scriptParams.drawnPath) {
     result.drawnPath = scriptParams.drawnPath;
@@ -331,7 +566,15 @@ export function executePlay(
   }
 
   // Score & Field Position resolution
-  if (result.isTouchdown) {
+  if (scriptParams.isFakeSnapNeutral) {
+    result.yardsGained = 0;
+    result.clockElapsedSeconds = 0;
+    result.isTouchdown = false;
+    result.isTurnover = false;
+    nextGame.yardLine = game.yardLine;
+    nextGame.down = game.down;
+    nextGame.distance = game.distance;
+  } else if (result.isTouchdown) {
     // Award 7 points (touchdown + automatic extra point in sim, or 6 if pick-6/defense)
     if (result.outcomeType === 'PickSix') {
       if (isHomePoss) {
@@ -417,6 +660,42 @@ export function executePlay(
     nextGame.yardLine = Math.max(5, Math.min(95, 100 - spot));
     nextGame.down = 1;
     nextGame.distance = 10;
+  } else if (result.outcomeType === 'PenaltyDefense') {
+    // Defense penalty: e.g. offsides, pass interference, facemask
+    // Advance ball by yardsGained (clamped < 100 or Touchdown if into endzone)
+    const newYardLine = currentYardLine + result.yardsGained;
+    if (newYardLine >= 100) {
+      nextGame.yardLine = 99;
+      nextGame.down = 1;
+      nextGame.distance = 1;
+      result.isFirstDown = true;
+    } else {
+      nextGame.yardLine = newYardLine;
+      nextGame.down = 1;
+      nextGame.distance = Math.min(10, 100 - newYardLine);
+      result.isFirstDown = true;
+    }
+  } else if (result.outcomeType === 'PenaltyOffense') {
+    // Offense penalty: e.g. false start, holding
+    // Move ball backward by yardsGained (e.g. -5). REPEAT DOWN (do NOT lose a down)!
+    const newYardLine = currentYardLine + result.yardsGained;
+    if (newYardLine <= 0) {
+      // Safety!
+      result.isSafety = true;
+      result.commentary += ' SAFETY! Penalty backed into the endzone for 2 points!';
+      if (isHomePoss) nextGame.awayScore += 2;
+      else nextGame.homeScore += 2;
+      nextGame.possession = isHomePoss ? 'away' : 'home';
+      nextGame.yardLine = 35;
+      nextGame.down = 1;
+      nextGame.distance = 10;
+    } else {
+      nextGame.yardLine = newYardLine;
+      // Do NOT lose a down! Replay down!
+      nextGame.down = game.down;
+      nextGame.distance = Math.min(99, game.distance - result.yardsGained);
+      result.isFirstDown = false;
+    }
   } else {
     // Normal play advance
     let newYardLine = currentYardLine + result.yardsGained;
@@ -475,6 +754,58 @@ export function executePlay(
   const timeStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 
   result.playCategory = offensePlay.category;
+
+  // Final synchronization check to ensure commentary and yardsGained are completely in sync
+  result.commentary = syncCommentaryWithYards(result.commentary, result.yardsGained, result.isFirstDown);
+
+  // Record play repetition metrics on nextGame
+  nextGame.lastOffensivePlayId = offensePlay.id;
+  nextGame.lastOffensivePlayName = offensePlay.name;
+  nextGame.consecutiveSamePlayCount = consecutivePlayCount;
+  if (consecutivePlayCount === 3) {
+    nextGame.repeatPlayWarning = `⚠️ REPEAT PLAY WARNING: '${offensePlay.name}' called 3 times in a row! Calling it again will trigger heavy opponent sacks, INTs, or incomplete passes!`;
+  } else if (consecutivePlayCount > 3) {
+    nextGame.repeatPlayWarning = `🚨 DEFENSE READ ACTIVE: Defense anticipated '${offensePlay.name}' (${consecutivePlayCount}x in a row)! Elevated Sack, INT, and Incomplete risk triggered!`;
+  } else {
+    nextGame.repeatPlayWarning = undefined;
+  }
+
+  // Player Fatigue & Injury System (Fatigue uses strength stat, safe limit 10/20/30, benching recovers 2 hits every play)
+  let workingOffRoster = offTeam.roster && offTeam.roster.length > 0 ? offTeam.roster : generateInitialTeamRoster(offTeam);
+  let workingDefRoster = defTeam.roster && defTeam.roster.length > 0 ? defTeam.roster : generateInitialTeamRoster(defTeam);
+  
+  let fatigueResult: {
+    updatedRoster: FranchisePlayer[];
+    triggeredInjury: InjuryEvent | null;
+    fatigueNotice?: string;
+  } = {
+    updatedRoster: workingOffRoster,
+    triggeredInjury: null,
+  };
+
+  if (game.difficulty === 'Hard') {
+    fatigueResult = processPlayFatigueAndInjuries(workingOffRoster, offTeam, offensePlay, result);
+    workingDefRoster = processBenchRecovery(workingDefRoster);
+  }
+
+  if (isHomePoss) {
+    nextGame.homeTeam = { ...nextGame.homeTeam, roster: fatigueResult.updatedRoster };
+    nextGame.awayTeam = { ...nextGame.awayTeam, roster: workingDefRoster };
+  } else {
+    nextGame.awayTeam = { ...nextGame.awayTeam, roster: fatigueResult.updatedRoster };
+    nextGame.homeTeam = { ...nextGame.homeTeam, roster: workingDefRoster };
+  }
+
+  if (fatigueResult.fatigueNotice) {
+    nextGame.fatigueNotice = fatigueResult.fatigueNotice;
+  } else {
+    nextGame.fatigueNotice = undefined;
+  }
+
+  if (fatigueResult.triggeredInjury) {
+    nextGame.injuredPlayers = [fatigueResult.triggeredInjury, ...(nextGame.injuredPlayers || [])];
+    result.triggeredInjury = fatigueResult.triggeredInjury;
+  }
 
   nextGame.lastPlayResult = result;
   nextGame.playLog.unshift({
@@ -554,7 +885,7 @@ function buildScriptedResult(
     }
 
     case 'BigGain': {
-      const yards = Math.min(distanceToGoal - 2, 22 + Math.floor(Math.random() * 18));
+      const yards = params.customYards !== undefined ? params.customYards : Math.min(distanceToGoal - 2, 22 + Math.floor(Math.random() * 18));
       const commentary = isPass
         ? `${qb} steps up into the pocket and fires a ${yards}-yard laser downfield to ${wr}, who secures it across midfield!`
         : isQbRun
@@ -575,7 +906,7 @@ function buildScriptedResult(
     }
 
     case 'FirstDown': {
-      const yards = Math.min(distanceToGoal - 1, 11 + Math.floor(Math.random() * 5));
+      const yards = params.customYards !== undefined ? params.customYards : Math.min(distanceToGoal - 1, 11 + Math.floor(Math.random() * 5));
       const commentary = isPass
         ? `${qb} connects with ${wr} on an out route for a clean first down pickup of ${yards} yards!`
         : isQbRun
@@ -596,7 +927,7 @@ function buildScriptedResult(
     }
 
     case 'ShortGain': {
-      const yards = 3 + Math.floor(Math.random() * 3);
+      const yards = params.customYards !== undefined ? params.customYards : (3 + Math.floor(Math.random() * 3));
       const commentary = isPass
         ? `${qb} checks down into the flat to ${wr}, brought down after a quick pickup of ${yards} yards.`
         : isQbRun
@@ -637,7 +968,7 @@ function buildScriptedResult(
     }
 
     case 'TackleForLoss': {
-      const yards = -(2 + Math.floor(Math.random() * 3));
+      const yards = params.customYards !== undefined ? params.customYards : -(2 + Math.floor(Math.random() * 3));
       const commentary = isPass
         ? `${qb} drops back and attempts a quick screen to ${wr}, but ${defStar} sniffs it out and wraps him up for a loss of ${Math.abs(yards)} yards!`
         : isQbRun
@@ -658,7 +989,7 @@ function buildScriptedResult(
     }
 
     case 'Sack': {
-      const yards = -(6 + Math.floor(Math.random() * 5));
+      const yards = params.customYards !== undefined ? params.customYards : -(6 + Math.floor(Math.random() * 5));
       const commentary = isPass
         ? `SACKED! ${defStar} explodes off the edge unblocked and brings ${qb} crashing down for a ${Math.abs(yards)}-yard sack!`
         : isQbRun
@@ -759,10 +1090,10 @@ function buildScriptedResult(
     }
 
     case 'PenaltyDefense': {
-      const yards = 15;
+      const yards = params.customYards !== undefined ? params.customYards : 15;
       const commentary = isPass
-        ? `FLAG ON THE PLAY! Defensive Pass Interference on ${defTeam.name}. Automatic 1st down, 15 yard penalty!`
-        : `FLAG ON THE PLAY! Face Mask penalty against ${defTeam.name}'s defensive line. Automatic 1st down, 15 yard penalty!`;
+        ? `FLAG ON THE PLAY! Defensive Pass Interference on ${defTeam.name}. Automatic 1st down, ${yards} yard penalty!`
+        : `FLAG ON THE PLAY! Face Mask penalty against ${defTeam.name}'s defensive line. Automatic 1st down, ${yards} yard penalty!`;
       return {
         outcomeType: 'PenaltyDefense',
         yardsGained: yards,
@@ -771,16 +1102,16 @@ function buildScriptedResult(
         isTurnover: false,
         isSafety: false,
         isFirstDown: true,
-        penaltyYards: 15,
-        penaltyName: isPass ? 'Pass Interference' : 'Face Mask',
+        penaltyYards: yards,
+        penaltyName: params.customCommentary?.includes('OFFSIDES') ? 'Offsides' : (isPass ? 'Pass Interference' : 'Face Mask'),
         clockElapsedSeconds: 10,
         stoppedClock: true,
       };
     }
 
     case 'PenaltyOffense': {
-      const yards = -10;
-      const commentary = `FLAG ON THE PLAY! Offensive Holding on the left tackle. 10 yard penalty, replay the down.`;
+      const yards = params.customYards !== undefined ? params.customYards : -10;
+      const commentary = `FLAG ON THE PLAY! Offensive Holding on the left tackle. ${Math.abs(yards)} yard penalty, replay the down.`;
       return {
         outcomeType: 'PenaltyOffense',
         yardsGained: yards,
@@ -789,8 +1120,8 @@ function buildScriptedResult(
         isTurnover: false,
         isSafety: false,
         isFirstDown: false,
-        penaltyYards: -10,
-        penaltyName: 'Holding',
+        penaltyYards: yards,
+        penaltyName: params.customCommentary?.includes('FALSE START') ? 'False Start' : 'Holding',
         clockElapsedSeconds: 12,
         stoppedClock: true,
       };

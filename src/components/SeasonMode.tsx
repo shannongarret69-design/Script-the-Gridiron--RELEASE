@@ -24,6 +24,7 @@ import {
   advanceToSuperBowl,
   recalculateStandingsFromSchedule,
 } from '../utils/seasonEngine';
+import { generateInitialTeamRoster } from '../utils/aiRosterGenerator';
 import {
   getActiveSlotId,
   setActiveSlotId,
@@ -39,6 +40,9 @@ import { RosterDepthChartView } from './RosterDepthChartView';
 import { TradeCenterView } from './TradeCenterView';
 import { PlayerStatsHistoryView } from './PlayerStatsHistoryView';
 import { MvpAwardsModal } from './MvpAwardsModal';
+import { LeagueNewsModal } from './LeagueNewsModal';
+import { generateWeeklyLeagueNews } from '../utils/leagueNewsEngine';
+import { WeeklyLeagueNews } from '../types/franchise';
 import { PlayoffBracketView } from './PlayoffBracketView';
 import { crownMvpAndAwards } from '../utils/awardsEngine';
 import { getStartersFromRoster } from '../utils/rosterUtils';
@@ -97,6 +101,10 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
   const [showRewindModal, setShowRewindModal] = useState<boolean>(false);
   const [isMvpModalOpen, setIsMvpModalOpen] = useState<boolean>(false);
   const [simModalDetails, setSimModalDetails] = useState<SimGameDetails[] | null>(null);
+  const [showAdvanceWeekModal, setShowAdvanceWeekModal] = useState<boolean>(false);
+  const [isLeagueNewsModalOpen, setIsLeagueNewsModalOpen] = useState<boolean>(false);
+  const [activeLeagueNews, setActiveLeagueNews] = useState<WeeklyLeagueNews | null>(null);
+  const [allSeasonNews, setAllSeasonNews] = useState<WeeklyLeagueNews[]>([]);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
 
   const scrollTabs = (direction: 'left' | 'right') => {
@@ -149,8 +157,8 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
           starDef: starters.starDef,
           roster: season.userRoster,
         };
-      } else if (season.cpuRosters && season.cpuRosters[finalHome.id]) {
-        const cpuRoster = season.cpuRosters[finalHome.id];
+      } else {
+        const cpuRoster = season.cpuRosters && season.cpuRosters[finalHome.id] ? season.cpuRosters[finalHome.id] : generateInitialTeamRoster(finalHome);
         const starters = getStartersFromRoster(cpuRoster, finalHome);
         finalHome = {
           ...finalHome,
@@ -172,8 +180,8 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
           starDef: starters.starDef,
           roster: season.userRoster,
         };
-      } else if (season.cpuRosters && season.cpuRosters[finalAway.id]) {
-        const cpuRoster = season.cpuRosters[finalAway.id];
+      } else {
+        const cpuRoster = season.cpuRosters && season.cpuRosters[finalAway.id] ? season.cpuRosters[finalAway.id] : generateInitialTeamRoster(finalAway);
         const starters = getStartersFromRoster(cpuRoster, finalAway);
         finalAway = {
           ...finalAway,
@@ -275,6 +283,15 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
       setIsMvpModalOpen(true);
     }
 
+    let leagueNewsList = season.leagueNews || [];
+    if (simDetailsList.length > 0) {
+      const weeklyNews = generateWeeklyLeagueNews(weekNum, season.seasonYear || 2026, simDetailsList);
+      leagueNewsList = [...leagueNewsList.filter((n) => n.week !== weekNum), weeklyNews];
+      setActiveLeagueNews(weeklyNews);
+      setAllSeasonNews(leagueNewsList);
+      setIsLeagueNewsModalOpen(true);
+    }
+
     let advancedSeasonState: FranchiseSeasonState = {
       ...season,
       currentWeek: nextWeek,
@@ -283,6 +300,7 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
       standings: updatedStandings,
       playoffs,
       userRoster: updatedRoster,
+      leagueNews: leagueNewsList,
     };
 
     if (nextWeek === 19) {
@@ -1017,7 +1035,13 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
           {/* DEDICATED UNIFIED ADVANCE WEEK BUTTON */}
           <button
             id="btn-header-advance-week"
-            onClick={handleUniversalAdvanceWeek}
+            onClick={() => {
+              if (season && season.currentWeek <= 22) {
+                setShowAdvanceWeekModal(true);
+              } else {
+                handleUniversalAdvanceWeek();
+              }
+            }}
             className="flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-white hover:bg-emerald-50 text-emerald-950 font-display font-black text-xs shadow-sm transition transform active:scale-95 cursor-pointer"
             title="Advance current week or playoff round"
           >
@@ -1222,6 +1246,27 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
               >
                 <BarChart2 className="w-4 h-4 text-emerald-600" />
                 <span>STATS & HISTORY</span>
+              </button>
+
+              <button
+                id="btn-season-league-news"
+                onClick={() => {
+                  const newsList = season.leagueNews || [];
+                  if (newsList.length > 0) {
+                    setActiveLeagueNews(newsList[newsList.length - 1]);
+                    setAllSeasonNews(newsList);
+                    setIsLeagueNewsModalOpen(true);
+                  } else {
+                    const dummyNews = generateWeeklyLeagueNews(season.currentWeek, season.seasonYear || 2026, []);
+                    setActiveLeagueNews(dummyNews);
+                    setAllSeasonNews([dummyNews]);
+                    setIsLeagueNewsModalOpen(true);
+                  }
+                }}
+                className="flex items-center space-x-2 px-4 py-2.5 rounded-xl font-display font-bold text-xs sm:text-sm whitespace-nowrap shrink-0 transition bg-amber-500 hover:bg-amber-600 text-slate-950 shadow-sm cursor-pointer"
+              >
+                <Newspaper className="w-4 h-4" />
+                <span>LEAGUE NEWS</span>
               </button>
             </div>
 
@@ -1862,12 +1907,106 @@ export const SeasonMode: React.FC<SeasonModeProps> = ({ onPlaySeasonGame }) => {
         </div>
       )}
 
+      {/* Advance Week Confirmation / Review Modal */}
+      {showAdvanceWeekModal && season && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 sm:p-8 space-y-6 shadow-2xl relative">
+            <div className="text-center space-y-2">
+              <span className="text-xs font-mono font-bold tracking-widest text-amber-400 uppercase">
+                {season.currentWeek <= 18 ? `Week ${season.currentWeek} Review & Advance` : `Playoff Round Review`}
+              </span>
+              <h3 className="font-display font-black text-2xl text-white">
+                {season.currentWeek <= 18 ? `ADVANCE TO WEEK ${season.currentWeek + 1 <= 18 ? season.currentWeek + 1 : 'PLAYOFFS'}` : 'ADVANCE PLAYOFF ROUND'}
+              </h3>
+              <p className="text-xs text-slate-400">
+                Review your matchup before simulating this week. You can choose to play your game manually or continue to simulate the week.
+              </p>
+            </div>
+
+            {/* User Game Card Preview */}
+            {userWeekGame ? (
+              <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between text-xs font-mono text-slate-400 border-b border-slate-800/60 pb-2">
+                  <span>YOUR SCHEDULED GAME</span>
+                  <span className={userWeekGame.isPlayed ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                    {userWeekGame.isPlayed ? '✓ ALREADY PLAYED' : '⏳ UNPLAYED'}
+                  </span>
+                </div>
+                {(() => {
+                  const hTeam = getTeamById(userWeekGame.homeTeamId);
+                  const aTeam = getTeamById(userWeekGame.awayTeamId);
+                  return (
+                    <div className="flex items-center justify-between py-1">
+                      <div className="flex items-center space-x-2">
+                        <div
+                          className="w-8 h-8 rounded-lg flex items-center justify-center font-display font-black text-xs shadow"
+                          style={{
+                            backgroundColor: aTeam.primaryColor,
+                            color: aTeam.textColor || '#ffffff',
+                            border: `1.5px solid ${aTeam.secondaryColor || '#ffffff'}`,
+                          }}
+                        >
+                          {aTeam.abbr}
+                        </div>
+                        <span className="font-display text-sm text-white font-bold">@ {hTeam.name}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-xs font-mono text-slate-300 block">
+                          {hTeam.city} vs {aTeam.city}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+                {!userWeekGame.isPlayed && (
+                  <p className="text-[11px] text-amber-300/90 bg-amber-500/10 p-2.5 rounded-xl border border-amber-500/20">
+                    ⚠️ Your game has not been played yet. Clicking <strong>Continue & Simulate</strong> will automatically simulate this game and all other games for Week {season.currentWeek}. To play it manually, click Cancel and select "Play User Game".
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="p-4 bg-slate-950/60 rounded-2xl text-center text-xs text-slate-400">
+                No scheduled game for your team this week (Bye Week).
+              </div>
+            )}
+
+            <div className="flex items-center space-x-3 pt-2">
+              <button
+                onClick={() => setShowAdvanceWeekModal(false)}
+                className="flex-1 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-display font-bold text-xs uppercase tracking-wider transition cursor-pointer"
+              >
+                Cancel / Play Game
+              </button>
+              <button
+                onClick={() => {
+                  setShowAdvanceWeekModal(false);
+                  handleUniversalAdvanceWeek();
+                }}
+                className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-display font-black text-xs uppercase tracking-wider transition shadow-lg shadow-emerald-600/20 cursor-pointer"
+              >
+                Continue & Simulate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MVP Race & NFL Honors Awards Modal */}
       <MvpAwardsModal
         isOpen={isMvpModalOpen}
         onClose={() => setIsMvpModalOpen(false)}
         season={season}
       />
+
+      {/* Weekly League News Summary Modal */}
+      {isLeagueNewsModalOpen && (
+        <LeagueNewsModal
+          news={activeLeagueNews}
+          allSeasonNews={allSeasonNews}
+          onClose={() => setIsLeagueNewsModalOpen(false)}
+          onSelectWeek={(item) => setActiveLeagueNews(item)}
+        />
+      )}
     </div>
   );
 };

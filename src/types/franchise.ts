@@ -78,6 +78,17 @@ export interface FranchisePlayer {
     prevOvr?: number;
     newOvr?: number;
   };
+  // Player Fatigue & Injury System
+  fatigueHits?: number; // consecutive hits taken without a break
+  maxSafeHits?: number; // safe threshold derived from strength (10, 20, or 30)
+  injuryRiskPercent?: number; // 1% normally, +20% per hit over threshold
+  isInjured?: boolean;
+  injuryDetails?: {
+    injuryType: string;
+    severity: string;
+    durationWeeks?: number;
+    description: string;
+  };
 }
 
 export interface MvpCandidate {
@@ -188,6 +199,48 @@ export interface TradeNewsItem {
   analysis: string;
 }
 
+export interface WeeklyLeagueNews {
+  id: string;
+  week: number;
+  seasonYear: number;
+  date: string;
+  headline: string;
+  summary: string;
+  upsets: {
+    winnerId: string;
+    winnerName: string;
+    winnerScore: number;
+    loserId: string;
+    loserName: string;
+    loserScore: number;
+    upsetHeadline: string;
+    winProb: number;
+  }[];
+  topPerformers: {
+    category: 'Passing' | 'Rushing' | 'Receiving' | 'Defense';
+    playerName: string;
+    position: string;
+    teamId: string;
+    teamName: string;
+    statLine: string;
+    headline: string;
+  }[];
+  thrillerGame?: {
+    homeTeam: string;
+    homeScore: number;
+    awayTeam: string;
+    awayScore: number;
+    recap: string;
+  };
+  allScores?: {
+    homeId: string;
+    homeScore: number;
+    awayId: string;
+    awayScore: number;
+    isUpset?: boolean;
+  }[];
+}
+
 export interface SaveSlotData {
   slotId: 1 | 2 | 3;
   saveName: string;
@@ -222,6 +275,7 @@ export interface FranchiseSeasonState {
   transactions: { date: string; text: string; type: 'draft' | 'signing' | 'cut' | 'trade' }[];
   incomingTradeOffers?: IncomingTradeOffer[];
   tradeNews?: TradeNewsItem[];
+  leagueNews?: WeeklyLeagueNews[];
   wonSuperBowlLastSeason?: boolean;
   mvpHistory?: MvpHistoryEntry[];
   seasonAwards?: SeasonAwards;
